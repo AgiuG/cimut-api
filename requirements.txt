@@ -1,0 +1,7 @@
+fastapi==0.110.0
+uvicorn[standard]==0.27.0
+pydantic==2.6.0
+python-multipart==0.0.9
+paramiko==3.4.0
+cryptography==42.0.0
+opentelemetry-instrumentation-fastapi==0.50b0
