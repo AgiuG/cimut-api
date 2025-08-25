@@ -6,5 +6,5 @@ if __name__ == "__main__":
       host="0.0.0.0", 
       port=8000,
       workers=1,
-      reload=True, # Enable auto-reload for development
+      reload=False, # Enable auto-reload for development
     )
