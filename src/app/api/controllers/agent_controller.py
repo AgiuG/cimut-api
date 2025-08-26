@@ -15,11 +15,20 @@ class AgentManager:
     
     async def register_agent(self, agent_id: str, websocket: WebSocket, info: dict):
         self.active_agents[agent_id] = websocket
-        self.agent_info[agent_id] = {
-            **info,
-            'connected_at': datetime.now().isoformat(),
-            'status': 'online'
-        }
+
+        
+        if agent_id in self.agent_info:
+            self.agent_info[agent_id].update({
+                **info,
+                'connected_at': datetime.now().isoformat(),
+                'status': 'online'
+            })
+        else:
+            self.agent_info[agent_id] = {
+                **info,
+                'connected_at': datetime.now().isoformat(),
+                'status': 'online'
+            }
 
     async def unregister_agent(self, agent_id: str):
         if agent_id in self.active_agents:
