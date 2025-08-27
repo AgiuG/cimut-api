@@ -14,7 +14,6 @@ class AgentService:
     async def register_agent(self, agent_id: str, websocket: WebSocket, info: dict):
         self.active_agents[agent_id] = websocket
 
-        
         if agent_id in self.agent_info:
             self.agent_info[agent_id].update({
                 **info,

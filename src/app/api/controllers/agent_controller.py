@@ -3,12 +3,12 @@ from src.app.api.schemas.requests import (
     InjectionFaultRequest, 
     VerifyLineRequest
 )
-from src.app.services import AgentService
+from src.app.services import agent_service_instance
 import json
 
 router = APIRouter()
         
-service = AgentService()
+service = agent_service_instance
 
 @router.websocket("/agent/connect")
 async def agent_websocket(websocket: WebSocket):
