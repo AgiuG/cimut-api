@@ -1,16 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from src.app.api.controllers import (
-  FaultRouter,
-  AgentRouter
-)
+from src.app.api.controllers import AgentRouter
 from logging import getLogger
 
 logger = getLogger(__name__)
 
 def init_routers(app_: FastAPI) -> None:
-  app_.include_router(FaultRouter)
   app_.include_router(AgentRouter, prefix="/api")
 
 def create_app() -> FastAPI:

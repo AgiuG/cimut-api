@@ -1,3 +1,3 @@
-from .fault_service import FaultService
+from .agent_service import AgentService
 
-__all__ = ["FaultService"]
+__all__ = ["AgentService"]
