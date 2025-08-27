@@ -1,211 +1,149 @@
-# CIMut API - Backend
+# CIMut Backend API
 
-Uma API REST para injeção de falhas em sistemas remotos via SSH, construída com FastAPI e Paramiko.
+## Project Description
 
-## Características
+This is the backend API component of the CIMut project, developed in FastAPI. It implements an agent management system for mutation testing and fault injection in Continuous Integration (CI) environments. The system allows connecting multiple agents via WebSocket and executing controlled code modification operations to validate application robustness.
 
-- ✅ FastAPI para criação da API REST
-- ✅ Uvicorn como servidor ASGI
-- ✅ Validação de dados com Pydantic
-- ✅ CORS configurado
-- ✅ Documentação automática (Swagger UI)
-- ✅ Conexão SSH remota com Paramiko
-- ✅ Injeção de falhas em arquivos remotos
-- ✅ Verificação de conteúdo de linhas específicas
-- ✅ OpenTelemetry para instrumentação
-- ✅ Dockerização completa
-- ✅ Tratamento robusto de erros
+**Note**: This repository contains only the backend API. The complete CIMut project includes additional components for the full mutation testing ecosystem.
 
-## Requisitos
+## Main Features
+
+- **Agent Management**: Connection and control of multiple agents via WebSocket
+- **Fault Injection**: Controlled file modification for mutation testing
+- **Code Verification**: Reading specific lines in files
+- **Monitoring**: Listing connected agents and their status
+- **Observability**: Integrated OpenTelemetry instrumentation
+
+## Architecture
+
+The project uses an architecture based on:
+
+- **FastAPI**: Web framework for API development
+- **WebSocket**: Real-time communication with agents
+- **Docker**: Containerization to facilitate deployment
+- **OpenTelemetry**: Distributed monitoring and tracing
+
+## Project Structure
+
+```
+cimut-api/
+├── main.py                 # Application entry point
+├── src/
+│   ├── server.py          # FastAPI server configuration
+│   └── app/
+│       ├── api/
+│       │   ├── controllers/
+│       │   │   └── agent_controller.py  # API controllers
+│       │   └── schemas/
+│       │       └── requests/           # Pydantic schemas
+│       └── services/
+│           └── agent_service.py        # Agent business logic
+├── requirements.txt       # Python dependencies
+├── Dockerfile            # Docker configuration
+└── docker-compose.yml    # Container orchestration
+```
+
+## API Endpoints
+
+### WebSocket
+- `GET /api/agent/connect` - WebSocket connection for agents
+
+### HTTP
+- `GET /api/agents` - List all connected agents
+- `POST /api/agents/{agent_id}/fault` - Inject fault in file
+- `POST /api/agents/{agent_id}/verify` - Verify specific line content
+
+## How to Run
+
+### Prerequisites
 
 - Python 3.12+
-- Docker e Docker Compose (para execução via containers)
-- Acesso SSH aos sistemas remotos onde as falhas serão injetadas
+- Docker (optional)
 
-## Instalação e Execução
+### Local Execution
 
-### Opção 1: Usando Docker (Recomendado)
+1. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-1. Clone o repositório:
-   ```bash
-   git clone <repository-url>
-   cd cimut-api
-   ```
+2. Run the application:
+```bash
+python main.py
+```
 
-2. Execute com Docker Compose:
-   ```bash
-   docker-compose up --build
-   ```
+The API will be available at `http://localhost:8000`
 
-A API estará disponível em: `http://localhost:8000`
+### Docker Execution
 
-### Opção 2: Execução Local
+1. Build the image:
+```bash
+docker-compose build
+```
 
-1. Crie um ambiente virtual:
-   ```bash
-   python -m venv venv
-   ```
+2. Run the containers:
+```bash
+docker-compose up
+```
 
-2. Ative o ambiente virtual:
-   ```bash
-   # Windows
-   venv\Scripts\activate
-   
-   # Linux/Mac
-   source venv/bin/activate
-   ```
+## API Usage
 
-3. Instale as dependências:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Connecting an Agent
 
-4. Execute a aplicação:
-   ```bash
-   python main.py
-   ```
+Agents should connect via WebSocket by sending a JSON message with the agent ID:
 
-### Ou usando uvicorn diretamente:
+```json
+{
+  "agent_id": "agent-001",
+  "name": "Test Agent",
+  "version": "1.0.0"
+}
+```
+
+### Injecting Faults
+
+```bash
+curl -X POST "http://localhost:8000/api/agents/agent-001/fault" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "file_path": "/path/to/file.py",
+    "line_number": 10,
+    "new_content": "modified_line_content"
+  }'
+```
+
+### Verifying Code
+
+```bash
+curl -X POST "http://localhost:8000/api/agents/agent-001/verify" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "file_path": "/path/to/file.py",
+    "line_number": 10
+  }'
+```
+
+## Development
+
+For local development with auto-reload:
+
 ```bash
 uvicorn src.server:app --reload --host 0.0.0.0 --port 8000
 ```
 
-A API estará disponível em: `http://localhost:8000`
+## Technologies Used
 
-## Documentação
+- **FastAPI**: Asynchronous web framework
+- **Uvicorn**: ASGI server
+- **Pydantic**: Data validation
+- **OpenTelemetry**: Observability
+- **Docker**: Containerization
+- **Python 3.12**: Programming language
 
-Após iniciar o servidor, você pode acessar:
+## Author
 
-- **Swagger UI**: `http://localhost:8000/docs`
-- **ReDoc**: `http://localhost:8000/redoc`
-- **OpenAPI JSON**: `http://localhost:8000/openapi.json`
+Developed by Guilherme Silva
 
-## Endpoints Disponíveis
+## License
 
-| Método | Endpoint | Descrição |
-|--------|----------|-----------|
-| GET | `/` | Endpoint raiz - status da API |
-| POST | `/fault` | Injetar falha em arquivo remoto |
-| POST | `/verify` | Verificar conteúdo de linha específica |
-
-### Detalhes dos Endpoints
-
-#### POST `/fault` - Injeção de Falha
-Modifica o conteúdo de uma linha específica em um arquivo remoto via SSH.
-
-**Request Body:**
-```json
-{
-  "host": "192.168.1.100",
-  "port": 22,
-  "user": "username",
-  "password": "password",
-  "file_path": "/path/to/remote/file.txt",
-  "line_number": 10,
-  "new_content": "novo conteúdo da linha"
-}
-```
-
-#### POST `/verify` - Verificar Linha
-Obtém o conteúdo de uma linha específica de um arquivo remoto.
-
-**Request Body:**
-```json
-{
-  "host": "192.168.1.100",
-  "port": 22,
-  "user": "username",
-  "password": "password",
-  "remote_file_path": "/path/to/remote/file.txt",
-  "line_number": 10
-}
-```
-
-## Exemplo de Uso
-
-### Injetar uma falha:
-```bash
-curl -X POST "http://localhost:8000/fault" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "host": "192.168.1.100",
-       "port": 22,
-       "user": "testuser",
-       "password": "testpass",
-       "file_path": "/opt/app/config.txt",
-       "line_number": 5,
-       "new_content": "modified_config=true"
-     }'
-```
-
-### Verificar conteúdo de uma linha:
-```bash
-curl -X POST "http://localhost:8000/verify" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "host": "192.168.1.100",
-       "port": 22,
-       "user": "testuser",
-       "password": "testpass",
-       "remote_file_path": "/opt/app/config.txt",
-       "line_number": 5
-     }'
-```
-
-## Estrutura do Projeto
-
-```
-back/
-├── docker-compose.yml           # Configuração Docker Compose
-├── Dockerfile                   # Imagem Docker da aplicação
-├── main.py                     # Arquivo principal da aplicação
-├── requirements.txt            # Dependências do projeto
-├── README.md                   # Este arquivo
-└── src/
-    ├── server.py              # Configuração do servidor FastAPI
-    └── app/
-        ├── api/
-        │   ├── controllers/
-        │   │   ├── __init__.py
-        │   │   └── fault_controller.py  # Controladores dos endpoints
-        │   └── schemas/
-        │       ├── __init__.py
-        │       └── requests/
-        │           ├── __init__.py
-        │           ├── InjectionFault.py # Schema para injeção de falhas
-        │           └── VerifyLine.py     # Schema para verificação
-        └── services/
-            ├── __init__.py
-            └── fault_service.py         # Serviços de SSH e manipulação de arquivos
-```
-
-## Dependências Principais
-
-- **FastAPI**: Framework web moderno e de alta performance
-- **Uvicorn**: Servidor ASGI para produção
-- **Paramiko**: Biblioteca SSH para Python
-- **Pydantic**: Validação de dados
-- **OpenTelemetry**: Instrumentação e observabilidade
-
-## Segurança
-
-⚠️ **Importante**: Esta API manipula sistemas remotos via SSH. Certifique-se de:
-
-- Usar conexões seguras (SSH keys ao invés de senhas quando possível)
-- Validar todos os inputs
-- Implementar autenticação e autorização adequadas
-- Monitorar todas as operações
-- Usar em ambientes controlados e de teste
-
-## Próximos Passos
-
-Para expandir esta API, considere adicionar:
-
-- 🔐 Autenticação e autorização (JWT, OAuth2)
-- 🔑 Suporte a chaves SSH ao invés de senhas
-- 📊 Logging detalhado e auditoria
-- 🧪 Testes automatizados (pytest)
-- 📈 Métricas e monitoramento avançado
-- 🔄 Rollback automático de mudanças
-- 🚀 Deploy em produção com Kubernetes
-- 💾 Persistência de logs de mutações em banco de dados
+This project is under the MIT license.
