@@ -3,3 +3,7 @@ uvicorn[standard]==0.27.0
 pydantic==2.6.0
 opentelemetry-instrumentation-fastapi==0.50b0
 groq==0.31.0
+
+# Embedding dependencies
+sentence-transformers>=2.2.2
+numpy>=1.21.0
