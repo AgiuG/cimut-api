@@ -6,6 +6,13 @@ from src.app.api.schemas.requests import (
 from src.app.services import agent_service_instance
 import json
 
+import os
+from groq import Groq
+
+client = Groq(
+    api_key=os.environ.get("GROQ_API_KEY"),
+)
+
 router = APIRouter()
         
 service = agent_service_instance
@@ -79,3 +86,17 @@ async def agent_verify_line(agent_id: str, request: VerifyLineRequest):
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/agents/mutation")
+async def agent_mutation(request: dict):
+    chat_completion = client.chat.completions.create(
+        messages=[
+            {
+                "role": "user",
+                "content": request['message'],
+            }
+        ],
+        model="deepseek-r1-distill-llama-70b",
+    )
+
+    return chat_completion.choices[0].message.content
