@@ -12,3 +12,5 @@ services:
       - "./src:/app/src"
     environment:
       - PYTHONUNBUFFERED=1
+    env_file:
+      - .env 
