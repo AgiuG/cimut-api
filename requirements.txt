@@ -4,6 +4,7 @@ pydantic==2.6.0
 opentelemetry-instrumentation-fastapi==0.50b0
 groq==0.31.0
 
-# Embedding dependencies
+# Embedding dependencies - versões otimizadas para memória
 sentence-transformers>=2.2.2
 numpy>=1.21.0
+torch>=2.0.0
