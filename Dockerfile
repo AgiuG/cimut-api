@@ -22,5 +22,5 @@ COPY ./src /app/src
 # Expor a porta
 EXPOSE 8000
 
-# Comando para rodar a aplicação - usa PORT do Render ou 8000 como fallback
-CMD sh -c "uvicorn src.server:app --host 0.0.0.0 --port ${PORT:-8000}"
+# Comando para rodar a aplicação
+CMD ["uvicorn", "src.server:app", "--host", "0.0.0.0", "--port", "8000"]

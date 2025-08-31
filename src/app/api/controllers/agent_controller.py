@@ -5,7 +5,6 @@ from src.app.api.schemas.requests import (
 )
 from src.app.services import agent_service_instance
 import json
-import gc  # Para garbage collection
 
 import os
 from groq import Groq
@@ -19,29 +18,8 @@ client = Groq(
     api_key=os.environ.get("GROQ_API_KEY"),
 )
 
-# Variáveis globais para lazy loading
-_embedding_model = None
-_embeddings_database = None
-
-def get_embedding_model():
-    """Lazy loading do modelo CodeBERT com otimizações de memória"""
-    global _embedding_model
-    if _embedding_model is None:
-        _embedding_model = SentenceTransformer(
-            'microsoft/codebert-base',
-            device='cpu',  # Force CPU para economizar memória
-        )
-        # Força garbage collection após carregar
-        gc.collect()
-    return _embedding_model
-
-def release_model():
-    """Libera o modelo da memória quando não está em uso"""
-    global _embedding_model
-    if _embedding_model is not None:
-        del _embedding_model
-        _embedding_model = None
-        gc.collect()  # Força limpeza da memória
+#embedding_model = SentenceTransformer('microsoft/codebert-base')
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 router = APIRouter()
         
@@ -132,45 +110,31 @@ OPENSTACK_KNOWLEDGE_BASE = [
 def create_embeddings_database():
     """Cria base de embeddings dos componentes OpenStack"""
     embeddings_db = []
-    model = get_embedding_model()
     
-    try:
-        for component in OPENSTACK_KNOWLEDGE_BASE:
-            # Texto completo para embedding
-            text_for_embedding = f"""
-            File: {component['file']}
-            Functions: {', '.join(component['functions'])}
-            Description: {component['description']}
-            Fault scenarios: {component['fault_scenarios']}
-            """
-            
-            # Gera embedding
-            embedding = model.encode(
-                text_for_embedding.strip(),
-                batch_size=1,  # Processa um por vez para economizar memória
-                show_progress_bar=False
-            )
-            
-            embeddings_db.append({
-                'file': component['file'],
-                'functions': component['functions'],
-                'description': component['description'],
-                'embedding': embedding,
-                'text': text_for_embedding.strip()
-            })
-            
-        return embeddings_db
-    
-    finally:
-        # Libera modelo após criar embeddings
-        release_model()
+    for component in OPENSTACK_KNOWLEDGE_BASE:
+        # Texto completo para embedding
+        text_for_embedding = f"""
+        File: {component['file']}
+        Functions: {', '.join(component['functions'])}
+        Description: {component['description']}
+        Fault scenarios: {component['fault_scenarios']}
+        """
+        
+        # Gera embedding
+        embedding = embedding_model.encode(text_for_embedding.strip())
+        
+        embeddings_db.append({
+            'file': component['file'],
+            'functions': component['functions'],
+            'description': component['description'],
+            'embedding': embedding,
+            'text': text_for_embedding.strip()
+        })
+        
+    return embeddings_db
 
-def get_embeddings_database():
-    """Lazy loading da base de embeddings"""
-    global _embeddings_database
-    if _embeddings_database is None:
-        _embeddings_database = create_embeddings_database()
-    return _embeddings_database
+# Cria a base na inicialização
+embeddings_database = create_embeddings_database()
 
 def cosine_similarity(a, b):
     """Calcula similaridade entre dois vetores"""
@@ -178,38 +142,25 @@ def cosine_similarity(a, b):
 
 def search_relevant_files(query: str, top_k: int = 3):
     """Busca arquivos mais relevantes para a query"""
-    model = get_embedding_model()
-    embeddings_db = get_embeddings_database()
+    # Gera embedding da query
+    query_embedding = embedding_model.encode(query)
     
-    try:
-        # Gera embedding da query
-        query_embedding = model.encode(
-            query,
-            batch_size=1,
-            show_progress_bar=False
-        )
-        
-        # Calcula similaridades
-        similarities = []
-        
-        for item in embeddings_db:
-            similarity = cosine_similarity(query_embedding, item['embedding'])
-            similarities.append({
-                'file': item['file'],
-                'functions': item['functions'],
-                'description': item['description'],
-                'similarity': float(similarity)
-            })
-        
-        # Ordena por similaridade
-        similarities.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        return similarities[:top_k]
+    # Calcula similaridades
+    similarities = []
     
-    finally:
-        # Libera modelo após uso
-        release_model()
-        gc.collect()
+    for item in embeddings_database:
+        similarity = cosine_similarity(query_embedding, item['embedding'])
+        similarities.append({
+            'file': item['file'],
+            'functions': item['functions'],
+            'description': item['description'],
+            'similarity': float(similarity)
+        })
+    
+    # Ordena por similaridade
+    similarities.sort(key=lambda x: x['similarity'], reverse=True)
+    
+    return similarities[:top_k]
 
 @router.post("/agents/{agent_id}/find-fault-target")
 async def find_fault_target(agent_id: str,request: dict):
