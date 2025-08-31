@@ -241,15 +241,62 @@ async def find_fault_target(agent_id: str,request: dict):
         
         response = await service.send_command(agent_id, command)
 
-        print(response)
-        return response
+        mutation_prompt = f"""
+        Você é um especialista em mutation testing para sistemas críticos. Analise o código Python e introduza uma mutação sutil que cause o erro especificado.
+
+        ARQUIVO: {target_info['target_file']}
+
+        CÓDIGO A MUTAR:
+        ```python
+        {response['data']['content']}
+        ```
+
+        ERRO ALVO: {user_query}
+
+        REGRAS DE MUTAÇÃO:
+        1. Faça UMA modificação por vez na linha mais crítica
+        2. Mantenha o código sintaticamente válido
+        3. Prefira mutações sutis: troque operadores, altere condições, modifique valores
+        4. Evite mudanças óbvias que seriam facilmente detectadas
+        5. Foque em lógica de negócio, validações ou fluxo de controle
+
+        TIPOS DE MUTAÇÃO EFETIVOS:
+        - Operadores: == → !=, < → <=, and → or
+        - Condições: if condition → if not condition
+        - Valores: True → False, números, strings
+        - Chamadas: método() → método_errado()
+
+        FORMATO DE RESPOSTA (JSON puro, sem markdown):
+        {{
+            "modifications": [
+                {{
+                    "line_number": 123,
+                    "new_content": "código completo da linha modificada",
+                    "reason": "tipo de mutação aplicada"
+                }}
+            ]
+        }}"""
         
-    #    return {
-    #        "query": user_query,
-    #        "target": target_info,
-    #        "alternatives": relevant_files[1:3],  # Outras opções
-    #        "llm_analysis": llm_response
-    #    }
+        chat_completion_teste = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Você é um especialista em OpenStack. Analise e retorne APENAS o JSON solicitado."
+                },
+                {
+                    "role": "user",
+                    "content": mutation_prompt,
+                }
+            ],
+            model="deepseek-r1-distill-llama-70b",
+        )
+        
+        # Parse da resposta do LLM
+        llm_response = chat_completion_teste.choices[0].message.content
+
+        return llm_response
+        
+   
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
