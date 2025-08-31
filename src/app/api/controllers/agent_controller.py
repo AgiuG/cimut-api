@@ -11,6 +11,7 @@ from groq import Groq
 
 from sentence_transformers import SentenceTransformer
 import numpy as np
+import re
 
 
 
@@ -18,8 +19,8 @@ client = Groq(
     api_key=os.environ.get("GROQ_API_KEY"),
 )
 
-#embedding_model = SentenceTransformer('microsoft/codebert-base')
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+# embedding_model = SentenceTransformer('microsoft/codebert-base')
+# embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 router = APIRouter()
         
@@ -134,7 +135,7 @@ def create_embeddings_database():
     return embeddings_db
 
 # Cria a base na inicialização
-embeddings_database = create_embeddings_database()
+# embeddings_database = create_embeddings_database()
 
 def cosine_similarity(a, b):
     """Calcula similaridade entre dois vetores"""
@@ -211,7 +212,6 @@ async def find_fault_target(agent_id: str,request: dict):
         
         try:
             # Tenta extrair JSON da resposta
-            import re
             json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
             if json_match:
                 target_info = json.loads(json_match.group())
@@ -237,6 +237,7 @@ async def find_fault_target(agent_id: str,request: dict):
         command = {
             'action': 'read_full_file',
             'file_path': target_info['target_file'],
+            'functions': target_info['target_function']
         }
         
         response = await service.send_command(agent_id, command)
@@ -250,6 +251,9 @@ async def find_fault_target(agent_id: str,request: dict):
         ```python
         {response['data']['content']}
         ```
+
+        CÒDIGO POR LINHA:
+        {response['data']['lines']}
 
         ERRO ALVO: {user_query}
 
@@ -292,9 +296,29 @@ async def find_fault_target(agent_id: str,request: dict):
         )
         
         # Parse da resposta do LLM
-        llm_response = chat_completion_teste.choices[0].message.content
+        llm_response_1 = chat_completion_teste.choices[0].message.content
+        
+        json_match = re.search(r'\{.*\}', llm_response_1, re.DOTALL)
+        if json_match:
+            mutation_info = json.loads(json_match.group())
 
-        return llm_response
+        for mod in mutation_info['modifications']:
+            command = {
+                'action': 'modify_file',
+                'file_path': target_info['target_file'],
+                'line_number': mod['line_number'],
+                'new_content': mod['new_content']
+            }
+     
+            response = await service.send_command(agent_id, command)
+        
+        return {
+            'target_file': target_info['target_file'],
+            'target_function': target_info['target_function'],
+            'mutation_suggestion': mutation_info,
+            'response': response,
+            'llm_analysis': llm_response_1,
+        }
         
    
         
@@ -370,17 +394,3 @@ async def agent_verify_line(agent_id: str, request: VerifyLineRequest):
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/agents/mutation")
-async def agent_mutation(request: dict):
-    chat_completion = client.chat.completions.create(
-        messages=[
-            {
-                "role": "user",
-                "content": request['message'],
-            }
-        ],
-        model="deepseek-r1-distill-llama-70b",
-    )
-
-    return chat_completion.choices[0].message.content
