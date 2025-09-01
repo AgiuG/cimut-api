@@ -5,26 +5,26 @@ from src.app.api.schemas.requests import (
 )
 from src.app.services import agent_service_instance
 import json
+import time
+import requests
+import glob
 
 import os
 from groq import Groq
 
-from sentence_transformers import SentenceTransformer
 import numpy as np
 import re
-
-
 
 client = Groq(
     api_key=os.environ.get("GROQ_API_KEY"),
 )
 
-# embedding_model = SentenceTransformer('microsoft/codebert-base')
-# embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-
 router = APIRouter()
         
 service = agent_service_instance
+
+# Variável global para armazenar embeddings
+KNOWLEDGE_EMBEDDINGS_CACHE = None
 
 # Base de conhecimento OpenStack para embeddings
 OPENSTACK_KNOWLEDGE_BASE = [
@@ -108,59 +108,159 @@ OPENSTACK_KNOWLEDGE_BASE = [
     }
 ]
 
-def create_embeddings_database():
-    """Cria base de embeddings dos componentes OpenStack"""
-    embeddings_db = []
+def initialize_embeddings():
+    """Inicializa os embeddings na inicialização da API"""
+    global KNOWLEDGE_EMBEDDINGS_CACHE
     
-    for component in OPENSTACK_KNOWLEDGE_BASE:
-        # Texto completo para embedding
-        text_for_embedding = f"""
-        File: {component['file']}
-        Functions: {', '.join(component['functions'])}
-        Description: {component['description']}
-        Fault scenarios: {component['fault_scenarios']}
-        """
-        
-        # Gera embedding
-        embedding = embedding_model.encode(text_for_embedding.strip())
-        
-        embeddings_db.append({
-            'file': component['file'],
-            'functions': component['functions'],
-            'description': component['description'],
-            'embedding': embedding,
-            'text': text_for_embedding.strip()
-        })
-        
-    return embeddings_db
+    embeddings_file = 'openstack_knowledge_embeddings.json'
+    
+    # Verifica se já existe arquivo salvo
+    if os.path.exists(embeddings_file):
+        print("Carregando embeddings existentes da base de conhecimento...")
+        with open(embeddings_file, 'r', encoding='utf-8') as f:
+            KNOWLEDGE_EMBEDDINGS_CACHE = json.load(f)
+        print(f"Embeddings carregados: {len(KNOWLEDGE_EMBEDDINGS_CACHE)} itens")
+        return
+    
+    print("Criando embeddings da base de conhecimento OpenStack...")
+    knowledge_embeddings = []
+    
+    for idx, item in enumerate(OPENSTACK_KNOWLEDGE_BASE):
+        try:
+            # Combina diferentes campos para criar texto para embedding
+            text_to_embed = ""
+            
+            if 'file' in item:
+                text_to_embed += f"File: {item['file']} "
+            if 'functions' in item:
+                text_to_embed += f"Functions: {' '.join(item['functions'])} "
+            if 'description' in item:
+                text_to_embed += f"Description: {item['description']} "
+            if 'fault_scenarios' in item:
+                text_to_embed += f"Scenarios: {item['fault_scenarios']} "
+            
+            # Gera embedding
+            print(f"Processando item {idx + 1}/{len(OPENSTACK_KNOWLEDGE_BASE)}")
+            embedding = get_embedding_codebert(text_to_embed)
+            
+            if embedding is not None:
+                knowledge_embeddings.append({
+                    'id': idx,
+                    'original_data': item,
+                    'text_embedded': text_to_embed[:200],
+                    'embedding': embedding
+                })
+            
+            # Rate limiting para API gratuita
+            time.sleep(2)
+            
+        except Exception as e:
+            print(f"Erro processando item {idx}: {e}")
+            continue
+    
+    # Salva embeddings para próximas inicializações
+    with open(embeddings_file, 'w', encoding='utf-8') as f:
+        json.dump(knowledge_embeddings, f, indent=2, ensure_ascii=False)
+    
+    KNOWLEDGE_EMBEDDINGS_CACHE = knowledge_embeddings
+    print(f"Embeddings criados e cached: {len(knowledge_embeddings)} itens")
 
-# Cria a base na inicialização
-# embeddings_database = create_embeddings_database()
+def get_embedding_codebert(text: str, max_retries: int = 3):
+    """Gera embedding usando CodeBERT via HuggingFace API"""
+    url = "https://api-inference.huggingface.co/models/microsoft/codebert-base"
+    
+    # Token opcional (se disponível)
+    hf_token = os.environ.get("HUGGINGFACE_TOKEN")
+    headers = {"Content-Type": "application/json"}
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
+    
+    payload = {
+        "inputs": text[:512],  # CodeBERT limite de 512 tokens
+        "options": {
+            "wait_for_model": True,
+            "use_cache": True
+        }
+    }
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            
+            if response.status_code == 200:
+                embedding = response.json()
+                if isinstance(embedding, list) and len(embedding) > 0:
+                    if isinstance(embedding[0], list):
+                        return np.mean(embedding, axis=0).tolist()
+                    return embedding
+                return None
+                
+            elif response.status_code == 503:
+                print(f"Modelo carregando... tentativa {attempt + 1}")
+                time.sleep(20)
+            elif response.status_code == 401:
+                print(f"Erro 401 - API requer autenticação. Configure HUGGINGFACE_TOKEN")
+                return None
+            else:
+                print(f"Erro API: {response.status_code}")
+                time.sleep(5)
+                
+        except Exception as e:
+            print(f"Erro na tentativa {attempt + 1}: {e}")
+            time.sleep(10)
+    
+    return None
 
 def cosine_similarity(a, b):
     """Calcula similaridade entre dois vetores"""
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-def search_relevant_files(query: str, top_k: int = 3):
-    """Busca arquivos mais relevantes para a query"""
-    # Gera embedding da query
-    query_embedding = embedding_model.encode(query)
+def search_relevant_knowledge(query: str, top_k: int = 5):
+    """Busca conhecimento relevante na base OpenStack usando cache"""
+    global KNOWLEDGE_EMBEDDINGS_CACHE
     
-    # Calcula similaridades
+    # Verifica se o cache está disponível
+    if KNOWLEDGE_EMBEDDINGS_CACHE is None or len(KNOWLEDGE_EMBEDDINGS_CACHE) == 0:
+        print("Cache de embeddings não disponível. Tentando inicializar...")
+        initialize_embeddings()
+        
+        # Verifica novamente após tentar inicializar
+        if KNOWLEDGE_EMBEDDINGS_CACHE is None or len(KNOWLEDGE_EMBEDDINGS_CACHE) == 0:
+            print("Falha ao inicializar embeddings")
+            return []
+    
+    # Gera embedding apenas da query
+    print("Gerando embedding da consulta...")
+    query_embedding = get_embedding_codebert(query)
+    
+    if query_embedding is None:
+        print("Erro ao gerar embedding da query")
+        return []
+    
+    # Calcula similaridades usando o cache
     similarities = []
     
-    for item in embeddings_database:
-        similarity = cosine_similarity(query_embedding, item['embedding'])
-        similarities.append({
-            'file': item['file'],
-            'functions': item['functions'],
-            'description': item['description'],
-            'similarity': float(similarity)
-        })
+    for item in KNOWLEDGE_EMBEDDINGS_CACHE:
+        if item.get('embedding'):
+            try:
+                # Calcula similaridade cosseno
+                sim = cosine_similarity(query_embedding, item['embedding'])
+                
+                similarities.append({
+                    'id': item['id'],
+                    'data': item['original_data'],
+                    'text_preview': item['text_embedded'],
+                    'similarity': float(sim)
+                })
+                
+            except Exception as e:
+                print(f"Erro calculando similaridade: {e}")
+                continue
     
     # Ordena por similaridade
     similarities.sort(key=lambda x: x['similarity'], reverse=True)
     
+    print(f"Encontrados {len(similarities)} itens relevantes")
     return similarities[:top_k]
 
 @router.post("/agents/{agent_id}/find-fault-target")
@@ -173,23 +273,34 @@ async def find_fault_target(agent_id: str,request: dict):
             raise HTTPException(status_code=400, detail="Query é obrigatória")
         
         # Busca arquivos relevantes usando embeddings
-        relevant_files = search_relevant_files(user_query, top_k=5)
+        relevant_knowledge = search_relevant_knowledge(user_query, top_k=5)
+        
+        if not relevant_knowledge:
+            return {"error": "Nenhum conhecimento relevante encontrado"}
+        
+        knowledge_context = "\n\n".join([
+            f"CONHECIMENTO {idx + 1} (Similaridade: {item['similarity']:.3f}):\n{json.dumps(item['data'], indent=2, ensure_ascii=False)}"
+            for idx, item in enumerate(relevant_knowledge)
+        ])
         
         # Monta prompt para o LLM analisar e escolher o melhor arquivo
         analysis_prompt = f"""
         Usuário quer: "{user_query}"
         
-        Arquivos OpenStack encontrados por similaridade semântica:
+        CONHECIMENTO RELEVANTE ENCONTRADO:
+        {knowledge_context}
         
-        {json.dumps(relevant_files, indent=2)}
+        Com base neste conhecimento, identifique:
+        1. O arquivo mais provável onde está o problema
+        2. A função específica relacionada ao erro
+        3. O tipo de mutação que pode causar este erro
         
-        Analise qual arquivo é MAIS ADEQUADO para causar a falha solicitada.
-        
-        Responda APENAS com este formato JSON:
+        Retorne JSON:
         {{
-            "target_file": "caminho/do/arquivo.py",
+            "target_file": "caminho/do/arquivo",
             "target_function": "nome_da_funcao",
-            "reason": "explicação de por que este arquivo/função",
+            "reasoning": "explicação baseada no conhecimento encontrado",
+            "knowledge_used": ["ids dos conhecimentos mais relevantes"]
         }}
         """
         
@@ -218,20 +329,18 @@ async def find_fault_target(agent_id: str,request: dict):
             else:
                 # Fallback: usa o arquivo com maior similaridade
                 target_info = {
-                    "target_file": relevant_files[0]['file'],
-                    "target_function": relevant_files[0]['functions'][0],
-                    "reason": f"Maior similaridade semântica ({relevant_files[0]['similarity']:.3f})",
-                    "fault_type": "exception",
-                    "confidence": relevant_files[0]['similarity']
+                    "target_file": relevant_knowledge[0]['data']['file'],
+                    "target_function": relevant_knowledge[0]['data']['functions'][0],
+                    "reasoning": f"Maior similaridade semântica ({relevant_knowledge[0]['similarity']:.3f})",
+                    "knowledge_used": [relevant_knowledge[0]['id']]
                 }
         except:
             # Fallback caso o JSON seja inválido
             target_info = {
-                "target_file": relevant_files[0]['file'],
-                "target_function": relevant_files[0]['functions'][0], 
-                "reason": "Análise por similaridade semântica",
-                "fault_type": "exception",
-                "confidence": relevant_files[0]['similarity']
+                "target_file": relevant_knowledge[0]['data']['file'],
+                "target_function": relevant_knowledge[0]['data']['functions'][0], 
+                "reasoning": "Análise por similaridade semântica",
+                "knowledge_used": [relevant_knowledge[0]['id']]
             }
         
         command = {
@@ -316,7 +425,7 @@ async def find_fault_target(agent_id: str,request: dict):
             'target_file': target_info['target_file'],
             'target_function': target_info['target_function'],
             'mutation_suggestion': mutation_info,
-            'response': response,
+            'mutation_info': response['data'],
             'llm_analysis': llm_response_1,
         }
         

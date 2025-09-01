@@ -1,10 +1,12 @@
+# FastAPI e servidor
 fastapi==0.110.0
 uvicorn[standard]==0.27.0
 pydantic==2.6.0
 opentelemetry-instrumentation-fastapi==0.50b0
+
+# LLM/AI APIs
 groq==0.31.0
 
-# Embedding dependencies - versões otimizadas para memória
-sentence-transformers>=2.2.2
+# Embeddings - necessário para HuggingFace CodeBERT
 numpy>=1.21.0
-torch>=2.0.0
+requests>=2.28.0
