@@ -97,7 +97,7 @@ class AgentService:
                 'target_file': target_info['target_file'],
                 'target_function': target_info['target_function'],
                 'mutation_suggestion': mutation_info,
-                'mutation_info': modification_results,
+                'mutation_infos': modification_results,
                 'reasoning': target_info['reasoning']
             }
             
@@ -274,4 +274,4 @@ class AgentService:
             response = await self.send_command(agent_id, command)
             results.append(response['data'])
             
-        return results
+        return "mutation": results
