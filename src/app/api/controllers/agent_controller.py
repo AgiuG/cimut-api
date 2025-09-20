@@ -4,12 +4,20 @@ from src.app.api.schemas.requests import (
     VerifyLineRequest
 )
 from src.app.services import agent_service_instance
+from src.app.data import VectorRepository
+from src.core import Factory
 import json
+
 import re
+
 
 router = APIRouter()
         
 service = agent_service_instance
+
+repository = VectorRepository()
+
+factory = Factory()
 
 # Base de conhecimento OpenStack para embeddings
 
@@ -169,16 +177,172 @@ service = agent_service_instance
 #     return similarities[:top_k]
 
 @router.post("/agents/{agent_id}/find-fault-target")
-async def find_fault_target(agent_id: str, request: dict):
+async def find_fault_target(agent_id: str,request: dict):
+    """Encontra arquivo alvo para injeção de falha baseado na pergunta do usuário"""
     try:
         user_query = request.get('query', '')
         
         if not user_query:
             raise HTTPException(status_code=400, detail="Query é obrigatória")
         
-        response = await service.llm_injection_fault(user_query, agent_id)
+        # Busca arquivos relevantes usando embeddings
+        relevant_knowledge = repository.search_relevant_knowledge(user_query, top_k=5)
+        
+        if not relevant_knowledge:
+            return {"error": "Nenhum conhecimento relevante encontrado"}
+        
+        knowledge_context = "\n\n".join([
+            f"CONHECIMENTO {idx + 1} (Similaridade: {item['similarity']:.3f}):\n{json.dumps(item['data'], indent=2, ensure_ascii=False)}"
+            for idx, item in enumerate(relevant_knowledge)
+        ])
+        
+        # Monta prompt para o LLM analisar e escolher o melhor arquivo
+        analysis_prompt = f"""
+        Usuário quer: "{user_query}"
+        
+        CONHECIMENTO RELEVANTE ENCONTRADO:
+        {knowledge_context}
+        
+        Com base neste conhecimento, identifique:
+        1. O arquivo mais provável onde está o problema
+        2. A função específica relacionada ao erro
+        3. O tipo de mutação que pode causar este erro
+        
+        Retorne JSON:
+        {{
+            "target_file": "caminho/do/arquivo",
+            "target_function": "nome_da_funcao",
+            "reasoning": "explicação baseada no conhecimento encontrado",
+            "knowledge_used": ["ids dos conhecimentos mais relevantes"]
+        }}
+        """
+        client = factory.get_llm_model()
+        
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Você é um especialista em OpenStack. Analise e retorne APENAS o JSON solicitado."
+                },
+                {
+                    "role": "user",
+                    "content": analysis_prompt,
+                }
+            ],
+            model="deepseek-r1-distill-llama-70b",
+        )
+        
+        # Parse da resposta do LLM
+        llm_response = chat_completion.choices[0].message.content
+        
+        try:
+            # Tenta extrair JSON da resposta
+            json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+            if json_match:
+                target_info = json.loads(json_match.group())
+            else:
+                # Fallback: usa o arquivo com maior similaridade
+                target_info = {
+                    "target_file": relevant_knowledge[0]['data']['file'],
+                    "target_function": relevant_knowledge[0]['data']['functions'][0],
+                    "reasoning": f"Maior similaridade semântica ({relevant_knowledge[0]['similarity']:.3f})",
+                    "knowledge_used": [relevant_knowledge[0]['id']]
+                }
+        except:
+            # Fallback caso o JSON seja inválido
+            target_info = {
+                "target_file": relevant_knowledge[0]['data']['file'],
+                "target_function": relevant_knowledge[0]['data']['functions'][0], 
+                "reasoning": "Análise por similaridade semântica",
+                "knowledge_used": [relevant_knowledge[0]['id']]
+            }
+        
+        command = {
+            'action': 'read_full_file',
+            'file_path': target_info['target_file'],
+            'functions': target_info['target_function']
+        }
+        
+        response = await service.send_command(agent_id, command)
 
-        return response
+        mutation_prompt = f"""
+        Você é um especialista em mutation testing para sistemas críticos. Analise o código Python e introduza uma mutação sutil que cause o erro especificado.
+
+        ARQUIVO: {target_info['target_file']}
+
+        CÓDIGO A MUTAR:
+        ```python
+        {response['data']['content']}
+        ```
+
+        CÒDIGO POR LINHA:
+        {response['data']['lines']}
+
+        ERRO ALVO: {user_query}
+
+        REGRAS DE MUTAÇÃO:
+        1. Faça UMA modificação por vez na linha mais crítica
+        2. Mantenha o código sintaticamente válido
+        3. Prefira mutações sutis: troque operadores, altere condições, modifique valores
+        4. Evite mudanças óbvias que seriam facilmente detectadas
+        5. Foque em lógica de negócio, validações ou fluxo de controle
+
+        TIPOS DE MUTAÇÃO EFETIVOS:
+        - Operadores: == → !=, < → <=, and → or
+        - Condições: if condition → if not condition
+        - Valores: True → False, números, strings
+        - Chamadas: método() → método_errado()
+
+        FORMATO DE RESPOSTA (JSON puro, sem markdown):
+        {{
+            "modifications": [
+                {{
+                    "line_number": 123,
+                    "new_content": "código completo da linha modificada",
+                    "reason": "tipo de mutação aplicada"
+                }}
+            ]
+        }}"""
+        
+        chat_completion_teste = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Você é um especialista em OpenStack. Analise e retorne APENAS o JSON solicitado."
+                },
+                {
+                    "role": "user",
+                    "content": mutation_prompt,
+                }
+            ],
+            model="deepseek-r1-distill-llama-70b",
+        )
+        
+        # Parse da resposta do LLM
+        llm_response_1 = chat_completion_teste.choices[0].message.content
+        
+        json_match = re.search(r'\{.*\}', llm_response_1, re.DOTALL)
+        if json_match:
+            mutation_info = json.loads(json_match.group())
+
+        for mod in mutation_info['modifications']:
+            command = {
+                'action': 'modify_file',
+                'file_path': target_info['target_file'],
+                'line_number': mod['line_number'],
+                'new_content': mod['new_content']
+            }
+     
+            response = await service.send_command(agent_id, command)
+        
+        return {
+            'target_file': target_info['target_file'],
+            'target_function': target_info['target_function'],
+            'mutation_suggestion': mutation_info,
+            'mutation_info': response['data'],
+            'llm_analysis': llm_response_1,
+        }
+             
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
