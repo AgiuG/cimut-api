@@ -53,8 +53,7 @@ class AgentService:
                 future = self.pending_responses.pop(command_id)
                 if not future.done():
                     future.set_result(data)
-        
-            
+    
         except json.JSONDecodeError:
             pass 
     
@@ -82,21 +81,68 @@ class AgentService:
             self.pending_responses.pop(command_id, None)
             raise HTTPException(status_code=500, detail=str(e))
         
-    
     async def llm_injection_fault(self, agent_id: str, user_query: str):
+        try:
+            relevant_knowledge = await self._search_relevant_knowledge(user_query)
+            
+            target_info = await self._analyze_target_location(user_query, relevant_knowledge)
+
+            file_content = await self._read_target_file(agent_id, target_info)
+
+            mutation_info = await self._generate_mutation(target_info, file_content, user_query)
+
+            modification_results = await self._apply_mutations(agent_id, target_info, mutation_info)
+
+            return {
+                'target_file': target_info['target_file'],
+                'target_function': target_info['target_function'],
+                'mutation_suggestion': mutation_info,
+                'mutation_info': modification_results,
+                'reasoning': target_info['reasoning']
+            }
+            
+        except Exception as e:
+            return {"error": f"Erro durante injeção de falhas: {str(e)}"}
         
+    async def _search_relevant_knowledge(self, user_query: str):
         relevant_knowledge = self.repository.search_relevant_knowledge(user_query, top_k=5)
         
         if not relevant_knowledge:
-            return {"error": "Nenhum conhecimento relevante encontrado"}
+            raise ValueError("Nenhum conhecimento relevante encontrado")
+            
+        return relevant_knowledge
+    
+    async def _analyze_target_location(self, user_query: str, relevant_knowledge: list) -> dict:
+        knowledge_context = self._build_knowledge_context(relevant_knowledge)
+        analysis_prompt = self._build_analysis_prompt(user_query, knowledge_context)
         
-        knowledge_context = "\n\n".join([
+        client = self.factory.get_llm_model()
+        
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Você é um especialista em OpenStack. Analise e retorne APENAS o JSON solicitado."
+                },
+                {
+                    "role": "user",
+                    "content": analysis_prompt,
+                }
+            ],
+            model="deepseek-r1-distill-llama-70b",
+        )
+        
+        llm_response = chat_completion.choices[0].message.content
+        return self._parse_target_info(llm_response, relevant_knowledge)
+    
+    def _build_knowledge_context(self, relevant_knowledge: list) -> str:
+        return "\n\n".join([
             f"CONHECIMENTO {idx + 1} (Similaridade: {item['similarity']:.3f}):\n{json.dumps(item['data'], indent=2, ensure_ascii=False)}"
             for idx, item in enumerate(relevant_knowledge)
         ])
-        
-        # Monta prompt para o LLM analisar e escolher o melhor arquivo
-        analysis_prompt = f"""
+    
+    def _build_analysis_prompt(self, user_query: str, knowledge_context: str) -> str:
+        return f"""
         Usuário quer: "{user_query}"
         
         CONHECIMENTO RELEVANTE ENCONTRADO:
@@ -115,6 +161,39 @@ class AgentService:
             "knowledge_used": ["ids dos conhecimentos mais relevantes"]
         }}
         """
+    
+    def _parse_target_info(self, llm_response: str, relevant_knowledge: list) -> dict:
+        try:
+            json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            else:
+                return self._get_fallback_target_info(relevant_knowledge)
+        except Exception:
+            return self._get_fallback_target_info(relevant_knowledge)
+    
+    def _get_fallback_target_info(self, relevant_knowledge: list) -> dict:
+        return {
+            "target_file": relevant_knowledge[0]['data']['file'],
+            "target_function": relevant_knowledge[0]['data']['functions'][0],
+            "reasoning": f"Maior similaridade semântica ({relevant_knowledge[0]['similarity']:.3f})",
+            "knowledge_used": [relevant_knowledge[0]['id']]
+        }
+    
+    async def _read_target_file(self, agent_id: str, target_info: dict) -> dict:
+        """Lê o conteúdo do arquivo alvo através do agente"""
+        command = {
+            'action': 'read_full_file',
+            'file_path': target_info['target_file'],
+            'functions': target_info['target_function']
+        }
+        
+        response = await self.send_command(agent_id, command)
+        return response['data']
+    
+    async def _generate_mutation(self, target_info: dict, file_content: dict, user_query: str) -> dict:
+        mutation_prompt = self._build_mutation_prompt(target_info, file_content, user_query)
+        
         client = self.factory.get_llm_model()
         
         chat_completion = client.chat.completions.create(
@@ -125,57 +204,28 @@ class AgentService:
                 },
                 {
                     "role": "user",
-                    "content": analysis_prompt,
+                    "content": mutation_prompt,
                 }
             ],
             model="deepseek-r1-distill-llama-70b",
         )
         
-        # Parse da resposta do LLM
         llm_response = chat_completion.choices[0].message.content
-        
-        try:
-            # Tenta extrair JSON da resposta
-            json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
-            if json_match:
-                target_info = json.loads(json_match.group())
-            else:
-                # Fallback: usa o arquivo com maior similaridade
-                target_info = {
-                    "target_file": relevant_knowledge[0]['data']['file'],
-                    "target_function": relevant_knowledge[0]['data']['functions'][0],
-                    "reasoning": f"Maior similaridade semântica ({relevant_knowledge[0]['similarity']:.3f})",
-                    "knowledge_used": [relevant_knowledge[0]['id']]
-                }
-        except:
-            # Fallback caso o JSON seja inválido
-            target_info = {
-                "target_file": relevant_knowledge[0]['data']['file'],
-                "target_function": relevant_knowledge[0]['data']['functions'][0], 
-                "reasoning": "Análise por similaridade semântica",
-                "knowledge_used": [relevant_knowledge[0]['id']]
-            }
-        
-        command = {
-            'action': 'read_full_file',
-            'file_path': target_info['target_file'],
-            'functions': target_info['target_function']
-        }
-        
-        response = await self.send_command(agent_id, command)
+        return self._parse_mutation_info(llm_response)
 
-        mutation_prompt = f"""
+    def _build_mutation_prompt(self, target_info: dict, file_content: dict, user_query: str) -> str:
+        return f"""
         Você é um especialista em mutation testing para sistemas críticos. Analise o código Python e introduza uma mutação sutil que cause o erro especificado.
 
         ARQUIVO: {target_info['target_file']}
 
         CÓDIGO A MUTAR:
         ```python
-        {response['data']['content']}
+        {file_content['content']}
         ```
 
         CÒDIGO POR LINHA:
-        {response['data']['lines']}
+        {file_content['lines']}
 
         ERRO ALVO: {user_query}
 
@@ -202,28 +252,17 @@ class AgentService:
                 }}
             ]
         }}"""
-        
-        chat_completion_teste = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Você é um especialista em OpenStack. Analise e retorne APENAS o JSON solicitado."
-                },
-                {
-                    "role": "user",
-                    "content": mutation_prompt,
-                }
-            ],
-            model="deepseek-r1-distill-llama-70b",
-        )
-        
-        # Parse da resposta do LLM
-        llm_response_1 = chat_completion_teste.choices[0].message.content
-        
-        json_match = re.search(r'\{.*\}', llm_response_1, re.DOTALL)
-        if json_match:
-            mutation_info = json.loads(json_match.group())
 
+    def _parse_mutation_info(self, llm_response: str) -> dict:
+        json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        else:
+            raise ValueError("Não foi possível extrair JSON da resposta de mutação")
+
+    async def _apply_mutations(self, agent_id: str, target_info: dict, mutation_info: dict) -> list:
+        results = []
+        
         for mod in mutation_info['modifications']:
             command = {
                 'action': 'modify_file',
@@ -231,13 +270,8 @@ class AgentService:
                 'line_number': mod['line_number'],
                 'new_content': mod['new_content']
             }
-     
+            
             response = await self.send_command(agent_id, command)
-        
-        return {
-            'target_file': target_info['target_file'],
-            'target_function': target_info['target_function'],
-            'mutation_suggestion': mutation_info,
-            'mutation_info': response['data'],
-            'llm_analysis': llm_response_1,
-        }
+            results.append(response['data'])
+            
+        return results
