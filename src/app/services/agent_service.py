@@ -274,4 +274,4 @@ class AgentService:
             response = await self.send_command(agent_id, command)
             results.append(response['data'])
             
-        return "mutation": results
+        return { "mutation": results }
